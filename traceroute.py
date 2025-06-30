@@ -75,10 +75,7 @@ def is_valid_ip(ip: str) -> bool:
         except OSError:
             return False
 
-def traceroute(target: str, max_hops: int = 30, timeout: int = 2) -> List[TracerouteHop]:
-    """
-    Perform a traceroute using the system command and return a list of hops with their locations
-    """
+def traceroute_system(target: str, max_hops: int = 30, timeout: int = 2) -> List[TracerouteHop]:
     hops = []
     traceroute_path = shutil.which('traceroute')
     tracepath_path = shutil.which('tracepath')
@@ -93,12 +90,8 @@ def traceroute(target: str, max_hops: int = 30, timeout: int = 2) -> List[Tracer
             cmd = [tracepath_path, target]
         else:
             raise RuntimeError("Neither traceroute nor tracepath is available on this system.")
-    try:
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        output, _ = proc.communicate(timeout=60)
-    except Exception as e:
-        raise RuntimeError(f"Traceroute failed: {e}")
-
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    output, _ = proc.communicate(timeout=60)
     for line in output.splitlines():
         print(f"Parsing line: {line}")  # Debug print
         if sys.platform.startswith('win'):
@@ -114,7 +107,6 @@ def traceroute(target: str, max_hops: int = 30, timeout: int = 2) -> List[Tracer
                 hop = TracerouteHop(ip_candidate, 0.0, location)
                 hops.append(hop)
         else:
-            # Accept both IPv4 and IPv6 addresses
             m = re.match(r"\s*(\d+)\s+([\da-fA-F\.:]+)(.*)", line)
             if m:
                 ip = m.group(2)
@@ -123,9 +115,6 @@ def traceroute(target: str, max_hops: int = 30, timeout: int = 2) -> List[Tracer
                     location = get_ip_location(ip)
                     hop = TracerouteHop(ip, 0.0, location)
                     hops.append(hop)
-            # tracepath output:  1?: [LOCALHOST]                      pmtu 1500
-            #                   1:  192.168.1.1  0.463ms
-            #                   2:  8.8.8.8      10.123ms reached
             if tracepath_path:
                 m2 = re.match(r"\s*\d+:\s+([\da-fA-F\.:]+)\s+", line)
                 if m2:
@@ -135,4 +124,34 @@ def traceroute(target: str, max_hops: int = 30, timeout: int = 2) -> List[Tracer
                         location = get_ip_location(ip)
                         hop = TracerouteHop(ip, 0.0, location)
                         hops.append(hop)
-    return hops 
+    return hops
+
+def traceroute_api(target: str) -> List[TracerouteHop]:
+    print('Falling back to public traceroute API...')
+    hops = []
+    try:
+        url = f'http://ip-api.com/json/traceroute?target={target}'
+        resp = requests.get(url, timeout=30)
+        data = resp.json()
+        for hop in data.get('hops', []):
+            ip = hop.get('ip')
+            if not ip or not is_valid_ip(ip):
+                continue
+            location = {
+                'city': hop.get('city', ''),
+                'country': hop.get('country', ''),
+                'latitude': hop.get('lat', 0),
+                'longitude': hop.get('lon', 0)
+            }
+            h = TracerouteHop(ip, 0.0, location)
+            hops.append(h)
+    except Exception as e:
+        print('Traceroute API failed:', e)
+    return hops
+
+def traceroute(target: str, max_hops: int = 30, timeout: int = 2) -> List[TracerouteHop]:
+    try:
+        return traceroute_system(target, max_hops, timeout)
+    except Exception as e:
+        print('System traceroute failed:', e)
+        return traceroute_api(target) 
