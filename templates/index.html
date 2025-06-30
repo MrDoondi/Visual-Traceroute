@@ -1,0 +1,444 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Visual Traceroute</title>
+    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+    <style>
+        .map-container {
+            height: 70vh;
+            width: 100%;
+            border-radius: 10px;
+            overflow: hidden;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+        .loading {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            display: none;
+        }
+        .hop-list {
+            max-height: 300px;
+            overflow-y: auto;
+        }
+    </style>
+    <!-- Leaflet CSS -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+</head>
+<body class="bg-gray-100 min-h-screen">
+    <div class="container mx-auto px-4 py-8">
+        <h1 class="text-4xl font-bold text-center mb-8 text-gray-800">Visual Traceroute</h1>
+        
+        <div class="mb-8">
+            <form id="traceForm" class="flex flex-col md:flex-row gap-4 justify-center items-center">
+                <input type="text" id="target" 
+                       class="px-4 py-2 rounded-lg border-2 border-gray-300 focus:border-blue-500 focus:outline-none w-full md:w-96"
+                       placeholder="Enter IP address or domain (e.g., google.com)">
+                <button type="submit" 
+                        class="bg-blue-500 hover:bg-blue-600 text-white font-bold py-2 px-6 rounded-lg transition duration-200">
+                    Trace Route
+                </button>
+            </form>
+        </div>
+
+        <div class="relative">
+            <div class="map-container bg-white p-4" id="map">
+                <!-- The map will be rendered here by Leaflet -->
+            </div>
+            <div class="loading" id="loading">
+                <!-- SVG Globe Animation with Hops -->
+                <div id="globe-animation" style="width:120px;height:120px;display:flex;align-items:center;justify-content:center;">
+                  <svg viewBox="0 0 120 120" width="120" height="120">
+                    <!-- Globe -->
+                    <circle cx="60" cy="60" r="50" fill="#0a2239" stroke="#00e0ff" stroke-width="3" />
+                    <!-- Meridians -->
+                    <ellipse cx="60" cy="60" rx="50" ry="15" fill="none" stroke="#00e0ff" stroke-width="1" opacity="0.3"/>
+                    <ellipse cx="60" cy="60" rx="50" ry="25" fill="none" stroke="#00e0ff" stroke-width="1" opacity="0.2"/>
+                    <ellipse cx="60" cy="60" rx="50" ry="40" fill="none" stroke="#00e0ff" stroke-width="1" opacity="0.1"/>
+                    <!-- Parallels -->
+                    <ellipse cx="60" cy="60" rx="15" ry="50" fill="none" stroke="#00e0ff" stroke-width="1" opacity="0.3"/>
+                    <ellipse cx="60" cy="60" rx="25" ry="50" fill="none" stroke="#00e0ff" stroke-width="1" opacity="0.2"/>
+                    <ellipse cx="60" cy="60" rx="40" ry="50" fill="none" stroke="#00e0ff" stroke-width="1" opacity="0.1"/>
+                    <!-- Animated hops (dots) -->
+                    <circle id="hop1" r="5" fill="#ff0080" />
+                    <circle id="hop2" r="4" fill="#00e0ff" />
+                    <circle id="hop3" r="3" fill="#fff" />
+                  </svg>
+                </div>
+            </div>
+        </div>
+
+        <div class="mt-8 bg-white rounded-lg shadow p-4">
+            <h2 class="text-2xl font-semibold mb-4 text-gray-700">Hop Details</h2>
+            <div class="hop-list" id="hopList">
+                <!-- Hop details will be inserted here -->
+            </div>
+        </div>
+    </div>
+
+    <!-- Leaflet JS -->
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script>
+        // Idle animation: random hops between world cities
+        const idleCities = [
+            { name: "New York", lat: 40.7128, lon: -74.0060 },
+            { name: "London", lat: 51.5074, lon: -0.1278 },
+            { name: "Tokyo", lat: 35.6895, lon: 139.6917 },
+            { name: "Sydney", lat: -33.8688, lon: 151.2093 },
+            { name: "Paris", lat: 48.8566, lon: 2.3522 },
+            { name: "Rio de Janeiro", lat: -22.9068, lon: -43.1729 },
+            { name: "Cape Town", lat: -33.9249, lon: 18.4241 },
+            { name: "Moscow", lat: 55.7558, lon: 37.6173 },
+            { name: "Singapore", lat: 1.3521, lon: 103.8198 },
+            { name: "San Francisco", lat: 37.7749, lon: -122.4194 }
+        ];
+        let idleMap, idleMarkers = [], idleLine = null, idleAnimActive = true;
+        let traceMap = null;
+
+        function startIdleAnimation() {
+            idleMap = L.map('map', {
+                center: [20, 0],
+                zoom: 2,
+                zoomControl: false,
+                attributionControl: false,
+                dragging: false,
+                scrollWheelZoom: false,
+                doubleClickZoom: false,
+                boxZoom: false,
+                keyboard: false
+            });
+            L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+                maxZoom: 19
+            }).addTo(idleMap);
+            animateIdleHops();
+        }
+
+        function animateIdleHops() {
+            if (!idleAnimActive) return;
+            // Remove previous markers and line
+            idleMarkers.forEach(m => idleMap.removeLayer(m));
+            idleMarkers = [];
+            if (idleLine) idleMap.removeLayer(idleLine);
+
+            // Pick 3 random cities
+            let indices = [];
+            while (indices.length < 3) {
+                let idx = Math.floor(Math.random() * idleCities.length);
+                if (!indices.includes(idx)) indices.push(idx);
+            }
+            let points = indices.map(i => idleCities[i]);
+
+            // Draw animated line
+            let latlngs = points.map(p => [p.lat, p.lon]);
+            idleLine = L.polyline(latlngs, { color: '#00e0ff', weight: 4, opacity: 0.7, dashArray: '10,10' }).addTo(idleMap);
+
+            // Draw animated packet (circle marker) at each city
+            points.forEach((p, i) => {
+                let marker = L.circleMarker([p.lat, p.lon], {
+                    radius: 10,
+                    color: '#fff',
+                    fillColor: '#00e0ff',
+                    fillOpacity: 0.8,
+                    weight: 2
+                }).addTo(idleMap);
+                marker.bindTooltip(`<b>${p.name}</b>`, {permanent: false, direction: 'top'});
+                idleMarkers.push(marker);
+            });
+
+            // Animate a "packet" moving along the line
+            let animMarker = L.circleMarker(latlngs[0], {
+                radius: 7,
+                color: '#fff',
+                fillColor: '#ff0080',
+                fillOpacity: 1,
+                weight: 2
+            }).addTo(idleMap);
+            idleMarkers.push(animMarker);
+
+            let step = 0, steps = 100, seg = 0;
+            function animate() {
+                if (!idleAnimActive) return;
+                let from = latlngs[seg], to = latlngs[seg+1];
+                if (!to) return;
+                let lat = from[0] + (to[0] - from[0]) * (step/steps);
+                let lon = from[1] + (to[1] - from[1]) * (step/steps);
+                animMarker.setLatLng([lat, lon]);
+                step++;
+                if (step > steps) {
+                    seg++;
+                    step = 0;
+                    if (seg >= latlngs.length-1) {
+                        setTimeout(animateIdleHops, 1000); // Start new animation
+                        return;
+                    }
+                }
+                setTimeout(animate, 15);
+            }
+            animate();
+        }
+
+        // Start idle animation on page load
+        window.addEventListener('DOMContentLoaded', () => {
+            startIdleAnimation();
+        });
+
+        // Stop idle animation and remove idle map
+        function stopIdleAnimation() {
+            idleAnimActive = false;
+            if (idleMap) {
+                idleMap.remove();
+                idleMap = null;
+            }
+            document.getElementById('map').innerHTML = '';
+        }
+
+        // Helper to check for private IPs
+        function isPrivateIP(ip) {
+            return /^10\.|^192\.168\.|^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(ip);
+        }
+
+        // Store user location if available
+        let userLocation = null;
+        if (navigator.geolocation) {
+            navigator.geolocation.getCurrentPosition(function(pos) {
+                userLocation = {
+                    latitude: pos.coords.latitude,
+                    longitude: pos.coords.longitude
+                };
+            }, function() {
+                userLocation = null;
+            });
+        }
+
+        // Animate traceroute path with a moving packet
+        function animateTraceRoute(hops) {
+            if (traceMap) {
+                traceMap.remove();
+                traceMap = null;
+            }
+            document.getElementById('map').innerHTML = '';
+            // Use special color for private hops
+            const coords = hops
+                .filter(h =>
+                    h.location &&
+                    typeof h.location.latitude === 'number' &&
+                    typeof h.location.longitude === 'number' &&
+                    !isNaN(h.location.latitude) &&
+                    !isNaN(h.location.longitude) &&
+                    !(h.location.latitude === 0 && h.location.longitude === 0)
+                )
+                .map(h => [h.location.latitude, h.location.longitude]);
+            if (coords.length < 2) return;
+            traceMap = L.map('map', {
+                center: coords[0],
+                zoom: 2,
+                zoomControl: true,
+                attributionControl: false,
+                dragging: true,
+                scrollWheelZoom: true,
+                doubleClickZoom: true,
+                boxZoom: true,
+                keyboard: true
+            });
+            L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+                maxZoom: 19
+            }).addTo(traceMap);
+
+            // Draw the traceroute path
+            let poly = L.polyline(coords, { color: '#00e0ff', weight: 4, opacity: 0.7, dashArray: '10,10' }).addTo(traceMap);
+
+            // Draw hop markers
+            hops.forEach((hop, i) => {
+                if (
+                    hop.location &&
+                    typeof hop.location.latitude === 'number' &&
+                    typeof hop.location.longitude === 'number' &&
+                    !isNaN(hop.location.latitude) &&
+                    !isNaN(hop.location.longitude) &&
+                    !(hop.location.latitude === 0 && hop.location.longitude === 0)
+                ) {
+                    let color = hop.is_private ? '#ffb300' : '#00e0ff';
+                    let marker = L.circleMarker([hop.location.latitude, hop.location.longitude], {
+                        radius: 10,
+                        color: '#fff',
+                        fillColor: color,
+                        fillOpacity: 0.8,
+                        weight: 2
+                    }).addTo(traceMap);
+                    let locText;
+                    if (
+                        hop.location &&
+                        ((hop.location.city && hop.location.city.trim() !== '') ||
+                         (hop.location.country && hop.location.country.trim() !== ''))
+                    ) {
+                        locText = `${hop.location.city || ''}${hop.location.city && hop.location.country ? ', ' : ''}${hop.location.country || ''}`;
+                    } else if (hop.is_private || isPrivateIP(hop.ip)) {
+                        locText = 'Private/Local Network';
+                    } else {
+                        locText = 'Unknown';
+                    }
+                    marker.bindTooltip(`<b>Hop ${i+1}</b><br>IP: ${hop.ip}<br>Hostname: ${hop.hostname}<br>Location: ${locText}`, {permanent: false, direction: 'top'});
+                }
+            });
+
+            // Animate a "packet" moving along the traceroute path
+            let animMarker = L.circleMarker(coords[0], {
+                radius: 7,
+                color: '#fff',
+                fillColor: hops[0].is_private ? '#ffb300' : '#ff0080',
+                fillOpacity: 1,
+                weight: 2
+            }).addTo(traceMap);
+
+            let step = 0, steps = 100, seg = 0;
+            function animate() {
+                let from = coords[seg], to = coords[seg+1];
+                if (!to) return;
+                let lat = from[0] + (to[0] - from[0]) * (step/steps);
+                let lon = from[1] + (to[1] - from[1]) * (step/steps);
+                animMarker.setLatLng([lat, lon]);
+                // Change color if next hop is private
+                if (hops[seg+1] && hops[seg+1].is_private) {
+                    animMarker.setStyle({ fillColor: '#ffb300' });
+                } else {
+                    animMarker.setStyle({ fillColor: '#ff0080' });
+                }
+                step++;
+                if (step > steps) {
+                    seg++;
+                    step = 0;
+                    if (seg >= coords.length-1) {
+                        return;
+                    }
+                }
+                setTimeout(animate, 15);
+            }
+            animate();
+        }
+
+        // Animate globe hops while loading
+        function animateGlobeHops() {
+            const R = 45; // radius for hops
+            const cx = 60, cy = 60;
+            let t = 0;
+            function frame() {
+                t += 0.03;
+                // Hop 1: fast
+                let angle1 = t * 1.7;
+                let x1 = cx + R * Math.cos(angle1);
+                let y1 = cy + R * Math.sin(angle1);
+                document.getElementById('hop1').setAttribute('cx', x1);
+                document.getElementById('hop1').setAttribute('cy', y1);
+                // Hop 2: medium
+                let angle2 = t * 1.1 + 1.5;
+                let x2 = cx + (R-10) * Math.cos(angle2);
+                let y2 = cy + (R-10) * Math.sin(angle2);
+                document.getElementById('hop2').setAttribute('cx', x2);
+                document.getElementById('hop2').setAttribute('cy', y2);
+                // Hop 3: slow
+                let angle3 = t * 0.7 + 3.2;
+                let x3 = cx + (R-20) * Math.cos(angle3);
+                let y3 = cy + (R-20) * Math.sin(angle3);
+                document.getElementById('hop3').setAttribute('cx', x3);
+                document.getElementById('hop3').setAttribute('cy', y3);
+                if (document.getElementById('loading').style.display !== 'none') {
+                    requestAnimationFrame(frame);
+                }
+            }
+            frame();
+        }
+        // Start globe animation on page load
+        window.addEventListener('DOMContentLoaded', () => {
+            animateGlobeHops();
+        });
+
+        document.getElementById('traceForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            stopIdleAnimation();
+            const target = document.getElementById('target').value;
+            const loading = document.getElementById('loading');
+            const hopList = document.getElementById('hopList');
+            loading.style.display = 'block';
+            animateGlobeHops();
+            hopList.innerHTML = '';
+
+            // Helper to get location if not already set
+            function getLocationPromise() {
+                return new Promise((resolve) => {
+                    if (userLocation !== null) return resolve(userLocation);
+                    if (navigator.geolocation) {
+                        navigator.geolocation.getCurrentPosition(function(pos) {
+                            resolve({
+                                latitude: pos.coords.latitude,
+                                longitude: pos.coords.longitude
+                            });
+                        }, function() {
+                            resolve(null);
+                        });
+                    } else {
+                        resolve(null);
+                    }
+                });
+            }
+
+            try {
+                const loc = await getLocationPromise();
+                const response = await fetch('/trace', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ target, user_location: loc }),
+                });
+                
+                const data = await response.json();
+                
+                if (data.error) {
+                    throw new Error(data.error);
+                }
+                
+                // Animate the traceroute path
+                animateTraceRoute(data.hops);
+                
+                // Update hop list
+                data.hops.forEach((hop, index) => {
+                    const hopElement = document.createElement('div');
+                    hopElement.className = 'mb-4 p-4 bg-gray-50 rounded-lg';
+                    let locText;
+                    if (
+                        hop.location &&
+                        ((hop.location.city && hop.location.city.trim() !== '') ||
+                         (hop.location.country && hop.location.country.trim() !== ''))
+                    ) {
+                        locText = `${hop.location.city || ''}${hop.location.city && hop.location.country ? ', ' : ''}${hop.location.country || ''}`;
+                    } else if (hop.is_private || isPrivateIP(hop.ip)) {
+                        locText = 'Private/Local Network';
+                    } else {
+                        locText = 'Unknown';
+                    }
+                    hopElement.innerHTML = `
+                        <div class="flex items-center justify-between">
+                            <span class="font-semibold text-gray-700">Hop ${index + 1}</span>
+                            <span class="text-sm text-gray-500">${hop.rtt}ms</span>
+                        </div>
+                        <div class="mt-2">
+                            <p class="text-sm text-gray-600">IP: ${hop.ip}</p>
+                            <p class="text-sm text-gray-600">Hostname: ${hop.hostname}</p>
+                            <p class="text-sm text-gray-600">Location: ${locText}</p>
+                        </div>
+                    `;
+                    hopList.appendChild(hopElement);
+                });
+                
+            } catch (error) {
+                alert('Error: ' + error.message);
+            } finally {
+                loading.style.display = 'none';
+            }
+        });
+    </script>
+</body>
+</html> 

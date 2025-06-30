@@ -1,0 +1,7 @@
+scapy==2.5.0
+geoip2==4.7.0
+folium==0.15.1
+flask==3.0.2
+requests==2.31.0
+maxminddb-geolite2==2018.703
+python-dotenv==1.0.1 
