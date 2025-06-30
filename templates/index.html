@@ -401,7 +401,19 @@
                 }
                 
                 // Animate the traceroute path
-                animateTraceRoute(data.hops);
+                const validHops = data.hops.filter(
+                  h => h.location &&
+                       typeof h.location.latitude === 'number' &&
+                       typeof h.location.longitude === 'number' &&
+                       !isNaN(h.location.latitude) &&
+                       !isNaN(h.location.longitude) &&
+                       !(h.location.latitude === 0 && h.location.longitude === 0)
+                );
+                if (validHops.length === 0) {
+                  document.getElementById('map').innerHTML = '<div class="text-center text-gray-500 py-8">No public hops with location found. Try another domain or check your network.</div>';
+                } else {
+                  animateTraceRoute(data.hops);
+                }
                 
                 // Update hop list
                 data.hops.forEach((hop, index) => {
